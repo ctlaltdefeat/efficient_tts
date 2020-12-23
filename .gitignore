@@ -36,3 +36,8 @@ egs/*/test_*
 # tools related
 tools/venv/
 tools/apex/
+
+build/
+dist/
+lightning_logs/
+datasets

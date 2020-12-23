@@ -16,16 +16,29 @@ import numpy as np
 from nntts.losses.fastspeech_loss import FastSpeechLoss
 from nntts.layers.duration_predictor import DurationPredictor
 from nntts.utils.nets_utils import make_non_pad_mask, make_pad_mask, pad_list
-from nntts.layers.initializer import initialize
 from nntts.layers.efts_modules import ResConvBlock
+import pytorch_lightning as pl
+from nntts.schedulers.warmup_lr import WarmupLR
 
 
-class EfficientTTSCNN(torch.nn.Module):
+# class EfficientTTSCNNPL(pl.LightningModule):
+#     def __init__(self, *args, **kwargs):
+#         super().__init__()
+#         self.model = EfficientTTSCNN(*args, **kwargs)
+
+#     def forward(self, *args, **kwargs):
+#         # in lightning, forward defines the prediction/inference actions
+#         embedding = self.encoder(x)
+#         return embedding
+
+
+class EfficientTTSCNN(pl.LightningModule):
     """EfficientTTS: An Efficient and High-Quality Text-to-Speech Architecture
     """
+
     def __init__(
         self,
-        num_symbols: int, # 148
+        num_symbols: int = 237,
         odim: int = 80,
         symbol_embedding_dim: int = 512,
         n_channels: int = 512,
@@ -37,11 +50,11 @@ class EfficientTTSCNN(torch.nn.Module):
         nonlinear_activation="LeakyReLU",
         nonlinear_activation_params={"negative_slope": 0.1},
         use_weight_norm=True,
-        dropout_rate=0.1,
-        use_masking: bool = False,
+        dropout_rate=0.0,
+        use_masking: bool = True,
         use_weighted_masking: bool = False,
         duration_offset=1.0,
-        sigma=0.01,
+        sigma=0.05,
         sigma_e=0.5,
         delta_e_method_1=True,
         share_text_encoder_key_value=False,
@@ -51,7 +64,7 @@ class EfficientTTSCNN(torch.nn.Module):
         self.duration_offset = duration_offset
         self.sigma = sigma
         self.sigma_e = sigma_e
-        self.delta_e_method_1 = delta_e_method_1  
+        self.delta_e_method_1 = delta_e_method_1
         self.share_text_encoder_key_value = share_text_encoder_key_value
 
         self.text_embedding_table = torch.nn.Embedding(
@@ -66,16 +79,14 @@ class EfficientTTSCNN(torch.nn.Module):
             dropout_rate=dropout_rate,
             use_weight_norm=use_weight_norm,
         )
-        self.text_encoder_key = torch.nn.Linear(
-            n_channels, n_channels
-        )
+        self.text_encoder_key = torch.nn.Linear(n_channels, n_channels)
         if not share_text_encoder_key_value:
-            self.text_encoder_value = torch.nn.Linear(
-                n_channels, n_channels
-            )
+            self.text_encoder_value = torch.nn.Linear(n_channels, n_channels)
         self.mel_prenet = torch.nn.Sequential(
             torch.nn.Linear(odim, n_channels),
-            getattr(torch.nn, nonlinear_activation)(**nonlinear_activation_params),
+            getattr(torch.nn, nonlinear_activation)(
+                **nonlinear_activation_params
+            ),
             torch.nn.Dropout(dropout_rate),
         )
         self.mel_encoder = ResConvBlock(
@@ -88,9 +99,7 @@ class EfficientTTSCNN(torch.nn.Module):
             use_weight_norm=use_weight_norm,
         )
         if use_mel_query_fc:
-            self.mel_query_fc = torch.nn.Linear(
-                n_channels, n_channels
-            )
+            self.mel_query_fc = torch.nn.Linear(n_channels, n_channels)
         else:
             self.mel_query_fc = None
         self.decoder = ResConvBlock(
@@ -110,11 +119,10 @@ class EfficientTTSCNN(torch.nn.Module):
             n_chans=n_channels,
             offset=duration_offset,
         )
-         
+
         # define criterions
         self.criterion = FastSpeechLoss(
-            use_masking=use_masking,
-            use_weighted_masking=use_weighted_masking
+            use_masking=use_masking, use_weighted_masking=use_weighted_masking
         )
 
     def forward(
@@ -131,21 +139,21 @@ class EfficientTTSCNN(torch.nn.Module):
             speech: Batch of mel-spectrograms (B, T2, num_mels)
             speech_lengths: Batch of mel-spectrogram lengths (B,)
         """
-        device = text.device
+        # device = text.device
         ## Prepare masks
         # [B, T1]
-        text_mask = make_non_pad_mask(text_lengths).to(device)
+        text_mask = make_non_pad_mask(text_lengths).to(self.device)
         # [B, T2]
-        mel_mask = make_non_pad_mask(speech_lengths).to(device)
+        mel_mask = make_non_pad_mask(speech_lengths).to(self.device)
         # [B, T1, T2]
         text_mel_mask = text_mask.unsqueeze(-1) & mel_mask.unsqueeze(1)
-        
+
         # [B, T1, C] -> [B, C, T1]
-        text_embedding = self.text_embedding_table(text).transpose(1, 2)
+        text_h = self.text_embedding_table(text).transpose(1, 2)
 
         ## text hidden
         # [B, C, T1] -> [B, T1, C]
-        text_h = self.text_encoder(text_embedding).transpose(1, 2)
+        text_h = self.text_encoder(text_h).transpose(1, 2)
         text_key = self.text_encoder_key(text_h)
         if self.share_text_encoder_key_value:
             text_value = text_key
@@ -166,19 +174,22 @@ class EfficientTTSCNN(torch.nn.Module):
         ## Scaled dot-product attention
         alpha = self.scaled_dot_product_attention(mel_h, text_key, text_mask)
         alpha = alpha.masked_fill(~text_mel_mask, 0.0)
-        
+
         ## Generate index mapping vector (IMV)
         text_index_vector = self.generate_index_vector(text_mask)
         # [B, T2]
         # print(text_lengths)
-        imv = self.imv_generator(alpha, text_index_vector, mel_mask, text_lengths)
-        
+        imv = self.imv_generator(
+            alpha, text_index_vector, mel_mask, text_lengths
+        )
+
         ## Obtain alinged positions
         # [B, T1]
         e = self.get_aligned_positions(
-            imv, text_index_vector, mel_mask, text_mask, sigma=self.sigma_e)
+            imv, text_index_vector, mel_mask, text_mask, sigma=self.sigma_e
+        )
         e = e.squeeze(-1)
-        
+
         ## Reconstructing alignment matrix
         # [B, T1, T2]
         reconst_alpha = self.reconstruct_align_from_aligned_position(
@@ -186,62 +197,72 @@ class EfficientTTSCNN(torch.nn.Module):
         ).masked_fill(~text_mel_mask, 0.0)
 
         ## Expanded text hidden to T2
-        # [B, D, T2] 
+        # [B, D, T2]
         text_value_expanded = torch.bmm(
             text_value.transpose(1, 2), reconst_alpha
         )
-        _tmp_mask_2 = ~(mel_mask.unsqueeze(1).repeat(1, text_value.size(2), 1))
-        text_value_expanded = text_value_expanded.masked_fill(_tmp_mask_2, 0.0)
-	
-	## Decoder forward        
+        _tmp_mask = ~(mel_mask.unsqueeze(1).repeat(1, text_value.size(2), 1))
+        text_value_expanded = text_value_expanded.masked_fill(_tmp_mask, 0.0)
+
+        ## Decoder forward
         mel_pred = self.decoder(text_value_expanded)
         mel_pred = self.mel_output_layer(mel_pred.transpose(1, 2))
-        _tmp_mask_3 = ~(mel_mask.unsqueeze(-1).repeat(1, 1, 80))
-        mel_pred = mel_pred.masked_fill(_tmp_mask_3, 0.0)
+        _tmp_mask = ~(mel_mask.unsqueeze(-1).repeat(1, 1, 80))
+        mel_pred = mel_pred.masked_fill(_tmp_mask, 0.0)
 
         # Prepare duration prediction target
         if self.delta_e_method_1:
-            delta_e = torch.cat([e[:, :1], e[:,1:] - e[:, :-1]], dim=1).detach()
+            delta_e = torch.cat(
+                [e[:, :1], e[:, 1:] - e[:, :-1]], dim=1
+            ).detach()
         else:
             B = speech_lengths.size(0)
             e = e.detach()
-            e = torch.cat([e, torch.zeros(B, 1).to(e.device)], dim=1)
+            # e = torch.cat([e, torch.zeros(B, 1).to(e.device)], dim=1)
+            e = torch.cat([e, torch.zeros(B, 1, device=self.device)], dim=1)
             for i in range(B):
-                max_len = speech_lengths[i].cpu().item()
-                max_index = text_lengths[i].cpu().item()
+                max_len = speech_lengths[i].cpu().detach()
+                max_index = text_lengths[i].cpu().detach()
                 e[i, max_index] = max_len
             delta_e = e[:, 1:] - e[:, :-1]
 
         log_delta_e = torch.log(delta_e + self.duration_offset)
         log_delta_e = log_delta_e.masked_fill(~text_mask, 0.0)
-        
+
         ## DurationPredictor forward
         dur_pred = self.duration_predictor(text_value, ~text_mask)
         mel_loss, dur_loss = self.criterion(
-            None, mel_pred, dur_pred, speech, log_delta_e, text_lengths, speech_lengths)
+            None,
+            mel_pred,
+            dur_pred,
+            speech,
+            log_delta_e,
+            text_lengths,
+            speech_lengths,
+        )
 
         loss = mel_loss + dur_loss
 
         stats = dict(
-            loss=loss.item(), mel_loss=mel_loss.item(), duration_loss=dur_loss.item()
+            loss=loss.detach(),
+            mel_loss=mel_loss.detach(),
+            duration_loss=dur_loss.detach(),
         )
         return loss, stats, imv, reconst_alpha, mel_pred, speech
 
     def inference(
-        self,
-        text: torch.Tensor,
-        text_lengths: torch.Tensor = None,
+        self, text: torch.Tensor, text_lengths: torch.Tensor = None,
     ):
         """Inference.
         Args:
             text: Batch of padded text ids (B, T1).
             text_lengths: Batch of lengths of each input batch (B,).
         """
-        device = text.device
+        # device = text.device
         ## Prepare masks
         # [B, T1]
         # text_mask = make_non_pad_mask(text_lengths).to(device)
-        
+
         # [B, T1, C] -> [B, C, T1]
         text_embedding = self.text_embedding_table(text).transpose(1, 2)
 
@@ -259,27 +280,34 @@ class EfficientTTSCNN(torch.nn.Module):
         if self.delta_e_method_1:
             e = torch.cumsum(delta_e, dim=1)
         else:
+            # e = torch.cumsum(
+            #     torch.cat(
+            #         [torch.zeros(1, 1).to(delta_e.device), delta_e], dim=1
+            #     ),
+            #     dim=1,
+            # )
             e = torch.cumsum(
-                torch.cat([torch.zeros(1,1).to(delta_e.device), delta_e], dim=1), 
-                dim=1
+                torch.cat([torch.zeros(1, 1, device=self.device), delta_e], dim=1), dim=1,
             )
         # print(e.shape)
 
         ## Reconstructing alignment matrix
         # [B, T1, T2]
         reconst_alpha = self.reconstruct_align_from_aligned_position(
-            e, delta=self.sigma, 
-            mel_mask=None, text_mask=None,
-            trim_e=(not self.delta_e_method_1)
-        )#.masked_fill(~text_mel_mask, 0.0)
+            e,
+            delta=self.sigma,
+            mel_mask=None,
+            text_mask=None,
+            trim_e=(not self.delta_e_method_1),
+        )  # .masked_fill(~text_mel_mask, 0.0)
 
         ## Expanded text hidden to T2
-        # [B, D, T2] 
+        # [B, D, T2]
         text_value_expanded = torch.bmm(
             text_value.transpose(1, 2), reconst_alpha
         )
-	
-	## Decoder forward        
+
+        ## Decoder forward
         mel_pred = self.decoder(text_value_expanded)
         mel_pred = self.mel_output_layer(mel_pred.transpose(1, 2))
         return mel_pred, reconst_alpha
@@ -291,11 +319,12 @@ class EfficientTTSCNN(torch.nn.Module):
         Returns:
             index vector of text sequence. [B, T1]
         """
-        device = text_mask.device
+        # device = text_mask.device
         B, T1 = text_mask.size()
-        p = torch.arange(0, T1).repeat(B, 1).float().to(device)
+        # p = torch.arange(0, T1).repeat(B, 1).float().to(device)
+        p = torch.arange(0, T1, device=self.device).repeat(B, 1).float()
         return p * text_mask
-    
+
     def imv_generator(self, alpha, p, mel_mask, text_length):
         """Compute index mapping index (IMV) from alignment matrix alpha.
         Implementation of HMA.
@@ -309,18 +338,26 @@ class EfficientTTSCNN(torch.nn.Module):
         """
         B, T1, T2 = alpha.size()
         # [B, T2]
-        imv_dummy = torch.bmm(alpha.transpose(1, 2), p.unsqueeze(-1)).squeeze(-1)
+        imv_dummy = torch.bmm(alpha.transpose(1, 2), p.unsqueeze(-1)).squeeze(
+            -1
+        )
         # [B, T2 - 1]
         delta_imv = torch.relu(imv_dummy[:, 1:] - imv_dummy[:, :-1])
         # [B, T2 - 1] -> [B, T2]
-        delta_imv = torch.cat([torch.zeros(B, 1).type_as(alpha), delta_imv], -1)
+        delta_imv = torch.cat(
+            [torch.zeros(B, 1).type_as(alpha), delta_imv], -1
+        )
         imv = torch.cumsum(delta_imv, -1) * mel_mask.float()
         # Get last element of imv
         last_imv, _ = torch.max(imv, dim=-1)
         # Avoid zeros
         last_imv = torch.clamp(last_imv, min=1e-8)
         # Multiply imv by a positive scalar to enforce 0 < imv < T1 - 1
-        imv = imv / last_imv.unsqueeze(1) * (text_length.float().unsqueeze(-1) - 1)
+        imv = (
+            imv
+            / last_imv.unsqueeze(1)
+            * (text_length.float().unsqueeze(-1) - 1)
+        )
         return imv
 
     def get_aligned_positions(self, imv, p, mel_mask, text_mask, sigma=0.5):
@@ -335,17 +372,32 @@ class EfficientTTSCNN(torch.nn.Module):
             Aligned positions [B, T1].
         """
         # [B, T1, T2]
-        energies = -1 * ((imv.unsqueeze(1) - p.unsqueeze(-1))**2) * sigma
+        energies = -1 * ((imv.unsqueeze(1) - p.unsqueeze(-1)) ** 2) * sigma
         energies = energies.masked_fill(
-            ~(mel_mask.unsqueeze(1).repeat(1, energies.size(1), 1)),-float('inf'))
+            ~(mel_mask.unsqueeze(1).repeat(1, energies.size(1), 1)),
+            -float("inf"),
+        )
         beta = torch.softmax(energies, dim=2)
-        q = torch.arange(0, mel_mask.size(-1)).unsqueeze(0).repeat(imv.size(0), 1).float().to(imv.device)
+        # q = (
+        #     torch.arange(0, mel_mask.size(-1))
+        #     .unsqueeze(0)
+        #     .repeat(imv.size(0), 1)
+        #     .float()
+        #     .to(imv.device)
+        # )
+        q = (
+            torch.arange(0, mel_mask.size(-1), device=self.device)
+            .unsqueeze(0)
+            .repeat(imv.size(0), 1)
+            .float()
+        )
         # Generate index vector of target squence.
         q = q * mel_mask.float()
         return torch.bmm(beta, q.unsqueeze(-1)) * text_mask.unsqueeze(-1)
 
     def reconstruct_align_from_aligned_position(
-            self, e, delta=0.1, mel_mask=None, text_mask=None, trim_e=False):
+        self, e, delta=0.1, mel_mask=None, text_mask=None, trim_e=False
+    ):
         """Reconstruct alignment matrix from aligned positions.
         Args:
             e: aligned positions [B, T1].
@@ -357,20 +409,32 @@ class EfficientTTSCNN(torch.nn.Module):
         """
         if mel_mask is None:
             # inference phase
-            # max_length = torch.round(e[:,-1] + (e[:,-1] - e[:, -2])).squeeze().item()
-            max_length = torch.round(e[:,-1]).squeeze().item() 
+            # max_length = torch.round(e[:,-1] + (e[:,-1] - e[:, -2])).squeeze().detach()
+            max_length = torch.round(e[:, -1]).squeeze().detach()
             if trim_e:
                 e = e[:, :-1]
         else:
             max_length = mel_mask.size(-1)
-        q = torch.arange(0, max_length).unsqueeze(0).repeat(e.size(0), 1).to(e.device).float()
+        # q = (
+        #     torch.arange(0, max_length)
+        #     .unsqueeze(0)
+        #     .repeat(e.size(0), 1)
+        #     .to(e.device)
+        #     .float()
+        # )
+        q = (
+            torch.arange(0, max_length, device=self.device)
+            .unsqueeze(0)
+            .repeat(e.size(0), 1)
+            .float()
+        )
         if mel_mask is not None:
             q = q * mel_mask.float()
-        energies = -1 * delta * (q.unsqueeze(1) - e.unsqueeze(-1))**2
+        energies = -1 * delta * (q.unsqueeze(1) - e.unsqueeze(-1)) ** 2
         if text_mask is not None:
             energies = energies.masked_fill(
                 ~(text_mask.unsqueeze(-1).repeat(1, 1, max_length)),
-                -float('inf')
+                -float("inf"),
             )
         return torch.softmax(energies, dim=1)
 
@@ -390,15 +454,14 @@ class EfficientTTSCNN(torch.nn.Module):
         scores = torch.bmm(query, key.transpose(-2, -1)) / np.sqrt(float(D))
         # [B, T2, T1]
         key_mask = ~(key_mask.unsqueeze(1).repeat(1, T2, 1))
-        scores = scores.masked_fill(key_mask, -float('inf'))
+        scores = scores.masked_fill(key_mask, -float("inf"))
         # [B, T2, T1]
-        alpha = torch.softmax(scores, dim=-1).masked_fill(
-            key_mask, 0.0
-        )
+        alpha = torch.softmax(scores, dim=-1).masked_fill(key_mask, 0.0)
         return alpha.transpose(-2, -1)
 
     def remove_weight_norm(self):
         """Remove weight normalization module from all of the layers."""
+
         def _remove_weight_norm(m):
             try:
                 logging.debug(f"Weight norm is removed from {m}.")
@@ -410,8 +473,9 @@ class EfficientTTSCNN(torch.nn.Module):
 
     def apply_weight_norm(self):
         """Apply weight normalization module from all of the layers."""
+
         def _apply_weight_norm(m):
-            if isinstance(m, torch.nn.Conv1d) or isinstance(m, torch.nn.ConvTranspose1d):
+            if isinstance(m, (torch.nn.Conv1d, torch.nn.ConvTranspose1d)):
                 torch.nn.utils.weight_norm(m)
                 logging.debug(f"Weight norm is applied to {m}.")
 
@@ -424,33 +488,109 @@ class EfficientTTSCNN(torch.nn.Module):
         https://github.com/descriptinc/melgan-neurips/blob/master/mel2wav/modules.py
 
         """
+
         def _reset_parameters(m):
-            if isinstance(m, torch.nn.Conv1d) or isinstance(m, torch.nn.ConvTranspose1d):
+            if isinstance(m, (torch.nn.Conv1d, torch.nn.ConvTranspose1d)):
                 # m.weight.data.normal_(0.0, 0.02)
                 torch.nn.init.kaiming_uniform_(m.weight.data)
                 if m.bias is not None:
                     torch.nn.init.zeros_(m.bias)
                 logging.debug(f"Reset parameters in {m}.")
 
-        self.apply(_reset_parameters)    
+        self.apply(_reset_parameters)
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-4, weight_decay=1e-6)
+        return (
+            [optimizer],
+            [WarmupLR(optimizer, 4000)],
+        )
+
+    def training_step(self, batch, batch_idx):
+        """Train model one step."""
+        # parse batch
+        if len(batch) >= 6:
+            text, text_lengths, duration, mel, mel_lengths, spkids = batch
+
+            # torch.autograd.set_detect_anomaly(True)
+            loss, stats = self(
+                text=text,
+                text_lengths=text_lengths,
+                speech=mel,
+                speech_lengths=mel_lengths,
+                durations=duration,
+                spembs=spkids,
+            )
+        else:
+            text, text_lengths, mel, mel_lengths = batch
+            loss, stats, *_ = self(
+                text=text,
+                text_lengths=text_lengths,
+                speech=mel,
+                speech_lengths=mel_lengths,
+            )
+        # # update stats
+        # self.total_train_loss["train/loss"] += stats["loss"]
+        # self.total_train_loss["train/mel_loss"] += stats["mel_loss"]
+        # self.total_train_loss["train/dur_loss"] += stats["duration_loss"]
+        self.log("train_loss", loss)
+
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        """Evaluate model one step."""
+        if len(batch) >= 6:
+            text, text_lengths, duration, mel, mel_lengths, spkids = batch
+
+            # torch.autograd.set_detect_anomaly(True)
+            loss, stats = self(
+                text=text,
+                text_lengths=text_lengths,
+                speech=mel,
+                speech_lengths=mel_lengths,
+                durations=duration,
+                spembs=spkids,
+            )
+        else:
+            text, text_lengths, mel, mel_lengths = batch
+            loss, stats, imv, alpha, mel_pred, mel_gt = self(
+                text=text,
+                text_lengths=text_lengths,
+                speech=mel,
+                speech_lengths=mel_lengths,
+            )
+        #     if plot:
+        #         plots(
+        #             imv,
+        #             alpha,
+        #             mel_pred,
+        #             mel_gt,
+        #             self.steps,
+        #             self.config["outdir"],
+        #         )
+        # # update stats
+        # self.total_eval_loss["eval/loss"] += stats["loss"]
+        # self.total_eval_loss["eval/mel_loss"] += stats["mel_loss"]
+        # self.total_eval_loss["eval/dur_loss"] += stats["duration_loss"]
+        self.log("val_loss", loss)
+        return loss
 
 
-if __name__ == "__main__":
-    num_symbols = 148
-    model = EfficientTTSCNN(num_symbols)
-    B=2
-    T1_1, T1_2 = 60, 80
-    T2_1, T2_2 = 450, 500
-    text_1 = torch.arange(T1_1)
-    text_2 = torch.arange(T1_2)
-    mel_1 = torch.rand(T2_1, 80)
-    mel_2 = torch.rand(T2_2, 80)
-    text = pad_list([text_1, text_2], 0)
-    mel = pad_list([mel_1, mel_2], 0)
-    text_lengths = torch.LongTensor([T1_1, T1_2])
-    mel_lengths = torch.LongTensor([T2_1, T2_2])
-    D = 512
-    loss, stats = model(text, text_lengths, mel, mel_lengths)
-    print(loss)
-    print(stats)
-
+# if __name__ == "__main__":
+#     num_symbols = 148
+#     model = EfficientTTSCNN(num_symbols)
+#     B = 2
+#     T1_1, T1_2 = 60, 80
+#     T2_1, T2_2 = 450, 500
+#     text_1 = torch.arange(T1_1)
+#     text_2 = torch.arange(T1_2)
+#     mel_1 = torch.rand(T2_1, 80)
+#     mel_2 = torch.rand(T2_2, 80)
+#     text = pad_list([text_1, text_2], 0)
+#     mel = pad_list([mel_1, mel_2], 0)
+#     text_lengths = torch.LongTensor([T1_1, T1_2])
+#     mel_lengths = torch.LongTensor([T2_1, T2_2])
+#     D = 512
+#     loss, stats, _ = model(text, text_lengths, mel, mel_lengths)
+#     print(loss)
+#     print(stats)
