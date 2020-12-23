@@ -19,17 +19,8 @@ from nntts.utils.nets_utils import make_non_pad_mask, make_pad_mask, pad_list
 from nntts.layers.efts_modules import ResConvBlock
 import pytorch_lightning as pl
 from nntts.schedulers.warmup_lr import WarmupLR
-
-
-# class EfficientTTSCNNPL(pl.LightningModule):
-#     def __init__(self, *args, **kwargs):
-#         super().__init__()
-#         self.model = EfficientTTSCNN(*args, **kwargs)
-
-#     def forward(self, *args, **kwargs):
-#         # in lightning, forward defines the prediction/inference actions
-#         embedding = self.encoder(x)
-#         return embedding
+from pytorch_lightning.loggers import LoggerCollection, TensorBoardLogger
+import nntts.utils.logging_utils as logging_utils
 
 
 class EfficientTTSCNN(pl.LightningModule):
@@ -61,6 +52,7 @@ class EfficientTTSCNN(pl.LightningModule):
         use_mel_query_fc=False,
     ):
         super().__init__()
+        self.save_hyperparameters()
         self.duration_offset = duration_offset
         self.sigma = sigma
         self.sigma_e = sigma_e
@@ -287,7 +279,10 @@ class EfficientTTSCNN(pl.LightningModule):
             #     dim=1,
             # )
             e = torch.cumsum(
-                torch.cat([torch.zeros(1, 1, device=self.device), delta_e], dim=1), dim=1,
+                torch.cat(
+                    [torch.zeros(1, 1, device=self.device), delta_e], dim=1
+                ),
+                dim=1,
             )
         # print(e.shape)
 
@@ -500,10 +495,12 @@ class EfficientTTSCNN(pl.LightningModule):
         self.apply(_reset_parameters)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-4, weight_decay=1e-6)
+        optimizer = torch.optim.Adam(
+            self.parameters(), lr=2e-4, weight_decay=1e-6
+        )
         return (
             [optimizer],
-            [WarmupLR(optimizer, 4000)],
+            [WarmupLR(optimizer, 400)],
         )
 
     def training_step(self, batch, batch_idx):
@@ -573,7 +570,24 @@ class EfficientTTSCNN(pl.LightningModule):
         # self.total_eval_loss["eval/mel_loss"] += stats["mel_loss"]
         # self.total_eval_loss["eval/dur_loss"] += stats["duration_loss"]
         self.log("val_loss", loss)
-        return loss
+        if len(batch) >= 6:
+            return loss
+        return imv, alpha, mel_pred, mel_gt
+
+    def validation_epoch_end(self, outputs):
+        if self.logger is not None and self.logger.experiment is not None:
+            tb_logger = self.logger.experiment
+            if isinstance(self.logger, LoggerCollection):
+                for logger in self.logger:
+                    if isinstance(logger, TensorBoardLogger):
+                        tb_logger = logger.experiment
+                        break
+            tensors = outputs[0]
+            if len(tensors) == 4:
+                imv, alpha, mel_pred, mel_gt = tensors
+                logging_utils.plots(
+                    tb_logger, imv, alpha, mel_pred, mel_gt, self.global_step
+                )
 
 
 # if __name__ == "__main__":

@@ -9,6 +9,7 @@ from nntts.datasets.meldataset import load_wav, normalize, mel_spectrogram
 from text_frontend import TextFrontend
 from pathlib import Path
 import dill
+from text_frontend import TextFrontend
 
 
 # def load_filepaths_and_text(filename, split="|"):
@@ -30,16 +31,30 @@ class TextMelLoader(torch.utils.data.Dataset):
         #  text_cleaners=['english_cleaners'],
         max_wav_value=32768.0,
         sampling_rate=22050,
+        lang="en-us"
         #  wav_path="/home/shaunxliu/data/LJSpeech-1.1/wavs",
         #  use_phnseq=False,
         #  phnset_path=None,
     ):
+        self.tf = TextFrontend(
+            text_cleaners=["english_cleaners"],
+            use_phonemes=True,
+            n_jobs=1,
+            with_stress=True,
+            language=lang,
+        )
         # self.audiopaths_and_text = load_filepaths_and_text(meta_file)
         p = Path(meta_file).resolve()
         if p.with_suffix(".pkl").exists():
             self.collection = dill.load(open(p.with_suffix(".pkl"), "rb"))
         else:
-            raise Exception
+            lines = open(meta_file, encoding="utf8").read().splitlines()
+            self.collection = [
+                (l.split("|")[0], self.tf(l.split("|")[1])) for l in lines
+            ]
+            dill.dump(
+                self.collection, open(p.with_suffix(".pkl"), "wb"),
+            )
         # self.text_cleaners = text_cleaners
         self.max_wav_value = max_wav_value
         self.sampling_rate = sampling_rate
@@ -55,7 +70,7 @@ class TextMelLoader(torch.utils.data.Dataset):
         # random.shuffle(self.audiopaths_and_text)
 
     def get_mel_text_pair(self, audio_path, text_tokens):
-        text = torch.tensor(text_tokens).long()
+        text = torch.tensor([self.tf.nchars] + text_tokens).long()
         mel = self.get_mel(audio_path)
         return (text, mel)
 

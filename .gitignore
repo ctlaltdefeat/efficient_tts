@@ -41,3 +41,6 @@ build/
 dist/
 lightning_logs/
 datasets
+
+*.pt
+*.pth
