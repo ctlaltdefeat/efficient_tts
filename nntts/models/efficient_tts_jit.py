@@ -9,9 +9,11 @@ class EfficientTTSCNNJIT(EfficientTTSCNN):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.example_input_array = torch.arange(
+        self.example_input_array = torch.arange(  # TODO: change this
             self.hparams.num_symbols
         ).unsqueeze(0)
+        self.eval()
+        self.freeze()
 
     @classmethod
     def load_from_checkpoint(cls, p):
@@ -19,6 +21,8 @@ class EfficientTTSCNNJIT(EfficientTTSCNN):
         m.example_input_array = torch.arange(m.hparams.num_symbols).unsqueeze(
             0
         )
+        m.eval()
+        m.freeze()
         return m
 
     def forward(self, tokens):

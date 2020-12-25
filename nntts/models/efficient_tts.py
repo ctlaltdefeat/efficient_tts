@@ -24,8 +24,7 @@ import nntts.utils.logging_utils as logging_utils
 
 
 class EfficientTTSCNN(pl.LightningModule):
-    """EfficientTTS: An Efficient and High-Quality Text-to-Speech Architecture
-    """
+    """EfficientTTS: An Efficient and High-Quality Text-to-Speech Architecture"""
 
     def __init__(
         self,
@@ -50,6 +49,9 @@ class EfficientTTSCNN(pl.LightningModule):
         delta_e_method_1=True,
         share_text_encoder_key_value=False,
         use_mel_query_fc=False,
+        lr=2e-3,
+        weight_decay=1e-6,
+        warmup_steps=40
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -60,7 +62,8 @@ class EfficientTTSCNN(pl.LightningModule):
         self.share_text_encoder_key_value = share_text_encoder_key_value
 
         self.text_embedding_table = torch.nn.Embedding(
-            num_symbols, symbol_embedding_dim,
+            num_symbols,
+            symbol_embedding_dim,
         )
         self.text_encoder = ResConvBlock(
             num_layers=n_text_encoder_layer,
@@ -104,6 +107,7 @@ class EfficientTTSCNN(pl.LightningModule):
             use_weight_norm=use_weight_norm,
         )
         self.mel_output_layer = torch.nn.Linear(n_channels, odim)
+        self.mel_postnet_layer = torch.nn.Linear(n_channels, n_channels)
         # Duration predictor
         self.duration_predictor = DurationPredictor(
             idim=n_channels,
@@ -198,7 +202,10 @@ class EfficientTTSCNN(pl.LightningModule):
 
         ## Decoder forward
         mel_pred = self.decoder(text_value_expanded)
-        mel_pred = self.mel_output_layer(mel_pred.transpose(1, 2))
+        mel_pred = self.mel_postnet_layer(mel_pred.transpose(1, 2))
+        mel_pred = F.leaky_relu(mel_pred, 0.1)
+        mel_pred = self.mel_output_layer(mel_pred)
+        # mel_pred = self.mel_output_layer(mel_pred.transpose(1, 2))
         _tmp_mask = ~(mel_mask.unsqueeze(-1).repeat(1, 1, 80))
         mel_pred = mel_pred.masked_fill(_tmp_mask, 0.0)
 
@@ -243,7 +250,9 @@ class EfficientTTSCNN(pl.LightningModule):
         return loss, stats, imv, reconst_alpha, mel_pred, speech
 
     def inference(
-        self, text: torch.Tensor, text_lengths: torch.Tensor = None,
+        self,
+        text: torch.Tensor,
+        text_lengths: torch.Tensor = None,
     ):
         """Inference.
         Args:
@@ -496,11 +505,11 @@ class EfficientTTSCNN(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(
-            self.parameters(), lr=2e-4, weight_decay=1e-6
+            self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay
         )
         return (
             [optimizer],
-            [WarmupLR(optimizer, 400)],
+            [WarmupLR(optimizer, self.hparams.warmup_steps)],
         )
 
     def training_step(self, batch, batch_idx):
@@ -530,9 +539,13 @@ class EfficientTTSCNN(pl.LightningModule):
         # self.total_train_loss["train/loss"] += stats["loss"]
         # self.total_train_loss["train/mel_loss"] += stats["mel_loss"]
         # self.total_train_loss["train/dur_loss"] += stats["duration_loss"]
-        self.log("train_loss", loss)
+        
+        self.log("train_loss", loss, on_step=False, on_epoch=True)
 
         return loss
+
+    # def training_epoch_end(self, outputs) -> None:
+    #     self.log("train_loss", outputs)
 
     def validation_step(self, batch, batch_idx):
         """Evaluate model one step."""
@@ -569,25 +582,26 @@ class EfficientTTSCNN(pl.LightningModule):
         # self.total_eval_loss["eval/loss"] += stats["loss"]
         # self.total_eval_loss["eval/mel_loss"] += stats["mel_loss"]
         # self.total_eval_loss["eval/dur_loss"] += stats["duration_loss"]
-        self.log("val_loss", loss)
+        self.log("val_loss", loss, on_step=False, on_epoch=True)
         if len(batch) >= 6:
             return loss
-        return imv, alpha, mel_pred, mel_gt
+        return loss, stats, imv, alpha, mel_pred, mel_gt
 
     def validation_epoch_end(self, outputs):
-        if self.logger is not None and self.logger.experiment is not None:
-            tb_logger = self.logger.experiment
-            if isinstance(self.logger, LoggerCollection):
-                for logger in self.logger:
-                    if isinstance(logger, TensorBoardLogger):
-                        tb_logger = logger.experiment
-                        break
-            tensors = outputs[0]
-            if len(tensors) == 4:
-                imv, alpha, mel_pred, mel_gt = tensors
-                logging_utils.plots(
-                    tb_logger, imv, alpha, mel_pred, mel_gt, self.global_step
-                )
+        if self.logger is None or self.logger.experiment is None:
+            return
+        tb_logger = self.logger.experiment
+        if isinstance(self.logger, LoggerCollection):
+            for logger in self.logger:
+                if isinstance(logger, TensorBoardLogger):
+                    tb_logger = logger.experiment
+                    break
+        tensors = outputs[0]
+        if len(tensors) == 6:
+            loss, stats, imv, alpha, mel_pred, mel_gt = tensors
+            logging_utils.plots(
+                tb_logger, imv, alpha, mel_pred, mel_gt, self.global_step
+            )
 
 
 # if __name__ == "__main__":

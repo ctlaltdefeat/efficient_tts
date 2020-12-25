@@ -179,6 +179,7 @@ def plots(swriter, imvs, alphas, mel_preds, mel_gts, step, num_plots=4):
         )
         log_audio_to_tb(swriter, mel_gt, f"griffin_lim_gt_{i}", step)
         log_audio_to_tb(swriter, mel_pred, f"griffin_lim_pred_{i}", step)
+        plt.close()
         i += 1
         if i > num_plots:
             break
