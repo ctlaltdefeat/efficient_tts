@@ -107,7 +107,7 @@ class EfficientTTSCNN(pl.LightningModule):
             use_weight_norm=use_weight_norm,
         )
         self.mel_output_layer = torch.nn.Linear(n_channels, odim)
-        self.mel_postnet_layer = torch.nn.Linear(n_channels, n_channels)
+        # self.mel_postnet_layer = torch.nn.Linear(n_channels, n_channels)
         # Duration predictor
         self.duration_predictor = DurationPredictor(
             idim=n_channels,
@@ -202,10 +202,10 @@ class EfficientTTSCNN(pl.LightningModule):
 
         ## Decoder forward
         mel_pred = self.decoder(text_value_expanded)
-        mel_pred = self.mel_postnet_layer(mel_pred.transpose(1, 2))
-        mel_pred = F.leaky_relu(mel_pred, 0.1)
-        mel_pred = self.mel_output_layer(mel_pred)
-        # mel_pred = self.mel_output_layer(mel_pred.transpose(1, 2))
+        # mel_pred = self.mel_postnet_layer(mel_pred.transpose(1, 2))
+        # mel_pred = F.leaky_relu(mel_pred, 0.1)
+        # mel_pred = self.mel_output_layer(mel_pred)
+        mel_pred = self.mel_output_layer(mel_pred.transpose(1, 2))
         _tmp_mask = ~(mel_mask.unsqueeze(-1).repeat(1, 1, 80))
         mel_pred = mel_pred.masked_fill(_tmp_mask, 0.0)
 

@@ -21,7 +21,7 @@ if __name__ == "__main__":
     train_loader = DataLoader(
         train,
         collate_fn=TextMelCollate(),
-        batch_size=192,
+        batch_size=256,
         pin_memory=True,
         num_workers=16,
     )
@@ -29,17 +29,18 @@ if __name__ == "__main__":
     val_loader = DataLoader(
         val,
         collate_fn=TextMelCollate(),
-        batch_size=192,
+        batch_size=256,
         pin_memory=True,
         num_workers=2,
     )
     model = EfficientTTSCNN(
         train.tf.nchars + 1,
-        sigma=0.05,
+        sigma=0.1,
         sigma_e=0.5,
-        lr=5e-4,
-        weight_decay=1e-5,
-        dropout_rate=0.1,
+        lr=1e-3,
+        weight_decay=1e-6,
+        dropout_rate=0.0,
+        n_decoder_layer=7
         # n_text_encoder_layer=6
     )
     # model = EfficientTTSCNN.load_from_checkpoint(
