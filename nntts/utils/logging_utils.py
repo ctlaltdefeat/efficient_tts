@@ -160,6 +160,11 @@ def plots(swriter, imvs, alphas, mel_preds, mel_gts, step, num_plots=4):
     alphas = alphas.detach().cpu().numpy()
     mel_preds = mel_preds.detach().cpu().numpy()
     mel_gts = mel_gts.detach().cpu().numpy()
+
+    # imvs = imvs.double().detach().cpu().numpy()
+    # alphas = alphas.double().detach().cpu().numpy()
+    # mel_preds = mel_preds.double().detach().cpu().numpy()
+    # mel_gts = mel_gts.double().detach().cpu().numpy()
     # logging.info(mel_gts.shape)
 
     i = 1
@@ -177,7 +182,8 @@ def plots(swriter, imvs, alphas, mel_preds, mel_gts, step, num_plots=4):
         swriter.add_image(
             f"plot_{i}", save_figure_to_numpy(fig), step, dataformats="HWC",
         )
-        log_audio_to_tb(swriter, mel_gt, f"griffin_lim_gt_{i}", step)
+        if step<100:
+            log_audio_to_tb(swriter, mel_gt, f"griffin_lim_gt_{i}", step)
         log_audio_to_tb(swriter, mel_pred, f"griffin_lim_pred_{i}", step)
         plt.close()
         i += 1

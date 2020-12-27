@@ -21,6 +21,7 @@ import pytorch_lightning as pl
 from nntts.schedulers.warmup_lr import WarmupLR
 from pytorch_lightning.loggers import LoggerCollection, TensorBoardLogger
 import nntts.utils.logging_utils as logging_utils
+from adabelief_pytorch import AdaBelief
 
 
 class EfficientTTSCNN(pl.LightningModule):
@@ -51,7 +52,7 @@ class EfficientTTSCNN(pl.LightningModule):
         use_mel_query_fc=False,
         lr=2e-3,
         weight_decay=1e-6,
-        warmup_steps=40
+        warmup_steps=40,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -504,9 +505,20 @@ class EfficientTTSCNN(pl.LightningModule):
         self.apply(_reset_parameters)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(
-            self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay
+        # optimizer = torch.optim.Adam(
+        #     self.parameters(),
+        #     lr=self.hparams.lr,
+        #     weight_decay=self.hparams.weight_decay,
+        # )
+        optimizer = AdaBelief(
+            self.parameters(),
+            lr=self.hparams.lr,
+            weight_decouple=True,
+            weight_decay=self.hparams.weight_decay,
+            eps=1e-14,
+            print_change_log=False,
         )
+        # return optimizer
         return (
             [optimizer],
             [WarmupLR(optimizer, self.hparams.warmup_steps)],
@@ -539,9 +551,17 @@ class EfficientTTSCNN(pl.LightningModule):
         # self.total_train_loss["train/loss"] += stats["loss"]
         # self.total_train_loss["train/mel_loss"] += stats["mel_loss"]
         # self.total_train_loss["train/dur_loss"] += stats["duration_loss"]
-        
-        self.log("train_loss", loss, on_step=False, on_epoch=True)
 
+        self.log("train/loss", loss, on_step=False, on_epoch=True)
+        self.log(
+            "train/mel_loss", stats["mel_loss"], on_step=False, on_epoch=True
+        )
+        self.log(
+            "train/dur_loss",
+            stats["duration_loss"],
+            on_step=False,
+            on_epoch=True,
+        )
         return loss
 
     # def training_epoch_end(self, outputs) -> None:
@@ -582,7 +602,16 @@ class EfficientTTSCNN(pl.LightningModule):
         # self.total_eval_loss["eval/loss"] += stats["loss"]
         # self.total_eval_loss["eval/mel_loss"] += stats["mel_loss"]
         # self.total_eval_loss["eval/dur_loss"] += stats["duration_loss"]
-        self.log("val_loss", loss, on_step=False, on_epoch=True)
+        self.log("val/loss", loss, on_step=False, on_epoch=True)
+        self.log(
+            "val/mel_loss", stats["mel_loss"], on_step=False, on_epoch=True
+        )
+        self.log(
+            "val/dur_loss",
+            stats["duration_loss"],
+            on_step=False,
+            on_epoch=True,
+        )
         if len(batch) >= 6:
             return loss
         return loss, stats, imv, alpha, mel_pred, mel_gt
