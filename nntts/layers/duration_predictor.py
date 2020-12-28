@@ -25,7 +25,7 @@ class DurationPredictor(torch.nn.Module):
 
     """
 
-    def __init__(self, idim, n_layers=2, n_chans=384, kernel_size=3, dropout_rate=0.1, offset=1.0, 
+    def __init__(self, idim, n_layers=2, n_chans=384, kernel_size=3, dropout_rate=0.0, offset=1.0, 
                  num_spks=None, spk_embed_dim=None, spk_embed_integration_type='add'):
         """Initilize duration predictor module.
 

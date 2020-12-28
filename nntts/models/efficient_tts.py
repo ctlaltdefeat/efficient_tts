@@ -52,7 +52,9 @@ class EfficientTTSCNN(pl.LightningModule):
         use_mel_query_fc=False,
         lr=2e-3,
         weight_decay=1e-6,
+        eps=1e-8,
         warmup_steps=40,
+        use_mse=True
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -115,11 +117,12 @@ class EfficientTTSCNN(pl.LightningModule):
             n_layers=n_duration_layer,
             n_chans=n_channels,
             offset=duration_offset,
+            dropout_rate=dropout_rate
         )
 
         # define criterions
         self.criterion = FastSpeechLoss(
-            use_masking=use_masking, use_weighted_masking=use_weighted_masking
+            use_masking=use_masking, use_weighted_masking=use_weighted_masking, use_mse=use_mse
         )
 
     def forward(
@@ -506,7 +509,7 @@ class EfficientTTSCNN(pl.LightningModule):
 
     def configure_optimizers(self):
         # optimizer = torch.optim.Adam(
-        #     self.parameters(),
+        #     self.parameters(),s
         #     lr=self.hparams.lr,
         #     weight_decay=self.hparams.weight_decay,
         # )
@@ -515,7 +518,7 @@ class EfficientTTSCNN(pl.LightningModule):
             lr=self.hparams.lr,
             weight_decouple=True,
             weight_decay=self.hparams.weight_decay,
-            eps=1e-14,
+            eps=self.hparams.eps,
             print_change_log=False,
         )
         # return optimizer
