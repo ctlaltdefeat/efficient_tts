@@ -2,8 +2,6 @@ import warnings
 
 warnings.simplefilter("ignore", UserWarning)
 
-from pytorch_lightning import callbacks
-
 import logging
 
 from nntts.models.efficient_tts import EfficientTTSCNN
@@ -37,34 +35,34 @@ if __name__ == "__main__":
     )
     model = EfficientTTSCNN(
         train.tf.nchars + 1,
-        sigma=0.01,
-        #     #     sigma_e=0.5,
-        lr=2e-4,
+        # sigma=0.01,
+        # sigma_e=0.5,
+        lr=5e-4,
         eps=1e-10,
-        weight_decay=1e-5,
+        weight_decay=1e-6,
         warmup_steps=40,
-        dropout_rate=0.0,
-        n_decoder_layer=5,
-        n_text_encoder_layer=3,
-        n_mel_encoder_layer=3,
-        n_duration_layer=2,
-        use_mse=False,
+        # dropout_rate=0.0,
+        # n_decoder_layer=5,
+        # n_text_encoder_layer=3,
+        # n_mel_encoder_layer=3,
+        # n_duration_layer=2,
+        # use_mse=False,
     )
-    model = EfficientTTSCNN.load_from_checkpoint(
-        r"/workspace/efficient_tts/lightning_logs/version_26/checkpoints/last.ckpt",
-        # lr=2e-4,
-        # warmup_steps=40,
-        sigma=0.01,
-        #     #     # sigma_e=0.5,
-        #     #     # lr=5e-4,
-        # weight_decay=1e-6,
-        # dropout_rate=0.5,
-        n_decoder_layer=5,
-        strict=False
-    )
+    # model = EfficientTTSCNN.load_from_checkpoint(
+    #     r"/workspace/efficient_tts/lightning_logs/version_26/checkpoints/last.ckpt",
+    #     # lr=2e-4,
+    #     # warmup_steps=40,
+    #     sigma=0.01,
+    #     #     #     # sigma_e=0.5,
+    #     #     #     # lr=5e-4,
+    #     # weight_decay=1e-6,
+    #     # dropout_rate=0.5,
+    #     n_decoder_layer=5,
+    #     strict=False
+    # )
     trainer = pl.Trainer(
         accelerator="ddp",
-        gpus=4,
+        gpus=-1,
         gradient_clip_val=1,
         check_val_every_n_epoch=10,
         benchmark=True,

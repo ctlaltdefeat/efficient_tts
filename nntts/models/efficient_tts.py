@@ -33,28 +33,29 @@ class EfficientTTSCNN(pl.LightningModule):
         odim: int = 80,
         symbol_embedding_dim: int = 512,
         n_channels: int = 512,
+        n_duration_channels: int = 320,
         n_text_encoder_layer: int = 5,
         n_mel_encoder_layer: int = 3,
         n_decoder_layer: int = 6,
         n_duration_layer: int = 2,
         k_size: int = 5,
         nonlinear_activation="LeakyReLU",
-        nonlinear_activation_params={"negative_slope": 0.1},
+        nonlinear_activation_params={"negative_slope": 0.2},
         use_weight_norm=True,
-        dropout_rate=0.0,
+        dropout_rate=0.2,
         use_masking: bool = True,
         use_weighted_masking: bool = False,
         duration_offset=1.0,
-        sigma=0.05,
-        sigma_e=0.5,
+        sigma=0.1,
+        sigma_e=0.2,
         delta_e_method_1=True,
-        share_text_encoder_key_value=False,
+        share_text_encoder_key_value=True,
         use_mel_query_fc=False,
         lr=2e-3,
         weight_decay=1e-6,
         eps=1e-8,
         warmup_steps=40,
-        use_mse=True
+        use_mse=True,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -115,14 +116,16 @@ class EfficientTTSCNN(pl.LightningModule):
         self.duration_predictor = DurationPredictor(
             idim=n_channels,
             n_layers=n_duration_layer,
-            n_chans=n_channels,
+            n_chans=n_duration_channels,
             offset=duration_offset,
-            dropout_rate=dropout_rate
+            dropout_rate=dropout_rate,
         )
 
         # define criterions
         self.criterion = FastSpeechLoss(
-            use_masking=use_masking, use_weighted_masking=use_weighted_masking, use_mse=use_mse
+            use_masking=use_masking,
+            use_weighted_masking=use_weighted_masking,
+            use_mse=use_mse,
         )
 
     def forward(
